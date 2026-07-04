@@ -248,6 +248,30 @@ async function saveCurrentPresetFile() {
     }
 }
 
+function updateCurrentStPreset() {
+    const $button = $('#update_oai_preset, [data-preset-manager-update="openai"]').first();
+    if (!$button.length || $button.is(':disabled') || $button.hasClass('disabled')) {
+        toastr.warning('ST 현재 프리셋 저장 버튼을 찾지 못했습니다.');
+        return;
+    }
+
+    $button.trigger('click');
+}
+
+function getCurrentPresetLineHtml(preset) {
+    return `
+        <div class="pb-preset-line">
+            <span>현재 프리셋</span>
+            <strong>${escapeHtml(preset)}</strong>
+            <button class="pb-icon-btn pb-save-st-preset" type="button" title="ST 현재 프리셋 업데이트" aria-label="ST 현재 프리셋 업데이트"><i class="fa-solid fa-save"></i></button>
+        </div>
+    `;
+}
+
+function bindCurrentPresetLine($scope) {
+    $scope.find('.pb-save-st-preset').off('click.presetBinder').on('click.presetBinder', updateCurrentStPreset);
+}
+
 function setPromptEnabled(promptId, enabled) {
     const pm = getPromptManager();
     const entry = pm.getPromptOrderEntry(pm.activeCharacter, promptId)
@@ -429,7 +453,11 @@ function renderCurrentTab(preset) {
     }
 
     if (!binders.length) {
-        $body.html('<div class="pb-empty">아직 묶음이 없습니다. 상단의 추가 버튼으로 첫 묶음을 만들어보세요.</div>');
+        $body.html(`
+            ${getCurrentPresetLineHtml(preset)}
+            <div class="pb-empty">아직 묶음이 없습니다. 상단의 추가 버튼으로 첫 묶음을 만들어보세요.</div>
+        `);
+        bindCurrentPresetLine($body);
         return;
     }
 
@@ -467,13 +495,12 @@ function renderCurrentTab(preset) {
     }).join('');
 
     $body.html(`
-        <div class="pb-preset-line">
-            <span>현재 프리셋</span>
-            <strong>${escapeHtml(preset)}</strong>
-        </div>
+        ${getCurrentPresetLineHtml(preset)}
         <div class="pb-mobile-hint">토글을 길게 눌러 표시</div>
         <div class="pb-card-grid">${cards}</div>
     `);
+
+    bindCurrentPresetLine($body);
 
     $body.find('.pb-toggle-input').on('pointerdown click', function (event) {
         event.stopPropagation();
