@@ -24,6 +24,25 @@ import {
 const extensionName = 'preset-binder';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const GLOBAL_PROMPT_ORDER_ID = 100001;
+const POPUP_THEME_PROPS = [
+    '--pb-bg-main',
+    '--pb-bg-header',
+    '--pb-bg-input',
+    '--pb-bg-group',
+    '--pb-text-main',
+    '--pb-text-sub',
+    '--pb-accent',
+    '--pb-accent-hover',
+    '--pb-border',
+    '--pb-border-light',
+    '--pb-shadow',
+    '--pb-control-border',
+    '--pb-control-bg',
+    '--pb-control-bg-hover',
+    '--pb-picked-bg-start',
+    '--pb-picked-bg-end',
+    '--pb-picked-shadow',
+];
 
 const DEFAULT_SETTINGS = {
     showWandButton: true,
@@ -76,6 +95,105 @@ function escapeHtml(value) {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
+}
+
+function getActiveTheme() {
+    const className = document.getElementById('preset-binder-window')?.className || '';
+    return className.match(/\btheme-([a-z0-9_-]+)\b/)?.[1] || settings.theme || 'default';
+}
+
+function getPopupThemeStyle() {
+    const source = document.getElementById('preset-binder-window');
+    if (!source) return '';
+    const computed = getComputedStyle(source);
+    return POPUP_THEME_PROPS
+        .map(prop => {
+            const value = computed.getPropertyValue(prop).trim();
+            return value ? `${prop}:${value.replaceAll(';', '')}` : '';
+        })
+        .filter(Boolean)
+        .join(';');
+}
+
+function syncDocumentThemeVariables() {
+    const style = getPopupThemeStyle();
+    const targets = [document.documentElement, document.body].filter(Boolean);
+    const theme = getActiveTheme();
+
+    document.documentElement.dataset.presetBinderTheme = theme;
+    document.body.dataset.presetBinderTheme = theme;
+
+    if (!style) return;
+    for (const declaration of style.split(';')) {
+        const [prop, ...valueParts] = declaration.split(':');
+        const value = valueParts.join(':').trim();
+        if (!prop?.trim() || !value) continue;
+        for (const target of targets) {
+            target.style.setProperty(prop.trim(), value);
+        }
+    }
+}
+
+function applyPopupThemeToElement(element, theme, style) {
+    if (!element) return;
+    element.classList.add('pb-popup-shell', 'pb-popup-theme', `theme-${theme}`);
+    if (style) {
+        for (const declaration of style.split(';')) {
+            const [prop, ...valueParts] = declaration.split(':');
+            const value = valueParts.join(':').trim();
+            if (prop?.trim() && value) element.style.setProperty(prop.trim(), value);
+        }
+    }
+}
+
+function getThemedPopupHtml(html) {
+    const theme = getActiveTheme();
+    const style = getPopupThemeStyle();
+    return `<div class="pb-popup-theme theme-${escapeHtml(theme)}" style="${escapeHtml(style)}">${html}</div>`;
+}
+
+function getPopupThemeAttribute() {
+    const style = getPopupThemeStyle();
+    return style ? ` style="${escapeHtml(style)}"` : '';
+}
+
+function applyPopupTheme(popupOrRoot) {
+    applyThemeClass();
+    syncDocumentThemeVariables();
+    const theme = getActiveTheme();
+    const style = getPopupThemeStyle();
+    const themedElements = [
+        popupOrRoot?.dlg,
+        popupOrRoot?.body,
+        popupOrRoot?.content,
+        popupOrRoot?.buttonControls,
+    ].filter(Boolean);
+
+    const contentRoot = popupOrRoot?.content || popupOrRoot?.body || popupOrRoot?.dlg || popupOrRoot;
+    const themedContent = contentRoot?.querySelector?.('.pb-picker, .pb-move-dialog, .pb-insert-dialog');
+    const popupRoot = themedContent?.closest?.('.popup, .dialogue_popup, .modal, [role="dialog"]');
+    if (themedContent) themedElements.push(themedContent);
+    if (popupRoot) {
+        themedElements.push(
+            popupRoot,
+            popupRoot.querySelector('.popup-body, .dialogue_popup_text, .modal-body'),
+            popupRoot.querySelector('.popup-content, .dialogue_popup_content, .modal-content'),
+            popupRoot.querySelector('.popup-controls, .dialogue_popup_controls, .modal-footer'),
+        );
+    }
+
+    for (const element of themedElements) applyPopupThemeToElement(element, theme, style);
+}
+
+function withPopupThemeOptions(options = {}) {
+    const originalOnOpen = options.onOpen;
+    return {
+        ...options,
+        onOpen: popup => {
+            applyPopupTheme(popup);
+            if (typeof originalOnOpen === 'function') originalOnOpen(popup);
+        },
+    };
 }
 
 function normalizePromptName(value) {
@@ -367,6 +485,7 @@ function applyThemeClass() {
     if (!$window.length) return;
     $window.removeClass((_, className) => (className.match(/\btheme-\S+/g) || []).join(' '));
     $window.addClass(`theme-${theme}`);
+    syncDocumentThemeVariables();
 }
 
 function createBinderWindow() {
@@ -712,12 +831,12 @@ async function showPromptSelectionPopup({
         <label class="pb-picker-row" data-id="${escapeHtml(prompt.id)}">
             <input type="checkbox" class="pb-picker-check" data-id="${escapeHtml(prompt.id)}" data-index="${index}" ${selectedIds.has(prompt.id) ? 'checked' : ''}>
             <span>${escapeHtml(prompt.name)}</span>
-            <em>${prompt.enabled ? 'ON' : 'OFF'}</em>
+            <em class="${prompt.enabled ? 'pb-state-on' : 'pb-state-off'}">${prompt.enabled ? 'ON' : 'OFF'}</em>
         </label>
     `).join('');
 
     const pickerHtml = `
-        <div class="pb-picker">
+        <div class="pb-picker"${getPopupThemeAttribute()}>
             ${requireTitle ? `
                 <label class="pb-picker-title">
                     <span>묶음 이름</span>
@@ -733,6 +852,7 @@ async function showPromptSelectionPopup({
     `;
 
     const observer = new MutationObserver(() => {
+        applyPopupTheme(document.body);
         const syncPickedRows = () => {
             $('.pb-picker-check').each((_, input) => {
                 $(input).closest('.pb-picker-row').toggleClass('pb-picked', $(input).prop('checked'));
@@ -789,7 +909,7 @@ async function showPromptSelectionPopup({
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    const confirmed = await callGenericPopup(pickerHtml, POPUP_TYPE.CONFIRM, '', { okButton, cancelButton: '취소' });
+    const confirmed = await callGenericPopup(getThemedPopupHtml(pickerHtml), POPUP_TYPE.CONFIRM, '', withPopupThemeOptions({ okButton, cancelButton: '취소' }));
     titleValue = $('#pb-picker-title-input').val() || titleValue;
     observer.disconnect();
     if (!confirmed) return null;
@@ -870,7 +990,7 @@ async function chooseDestinationPreset(sourcePreset) {
     let selected = destinationNames[0] || '';
     let mode = 'copy';
     const html = `
-        <div class="pb-move-dialog">
+        <div class="pb-move-dialog"${getPopupThemeAttribute()}>
             <label>
                 <span>도착 프리셋</span>
                 <select id="pb-move-preset">${options}</select>
@@ -882,6 +1002,7 @@ async function chooseDestinationPreset(sourcePreset) {
         </div>
     `;
     const observer = new MutationObserver(() => {
+        applyPopupTheme(document.body);
         const $select = $('#pb-move-preset');
         if (!$select.length) return;
         selected ||= $select.val();
@@ -893,7 +1014,7 @@ async function chooseDestinationPreset(sourcePreset) {
         });
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    const ok = await callGenericPopup(html, POPUP_TYPE.CONFIRM, '', { okButton: '다음', cancelButton: '취소' });
+    const ok = await callGenericPopup(getThemedPopupHtml(html), POPUP_TYPE.CONFIRM, '', withPopupThemeOptions({ okButton: '다음', cancelButton: '취소' }));
     selected = $('#pb-move-preset').val() || selected;
     mode = $('input[name="pb-transfer-mode"]:checked').val() || mode;
     observer.disconnect();
@@ -916,12 +1037,13 @@ async function chooseInsertAfterPrompt(targetPresetName, matchedIds) {
 
     let insertAfterId = '';
     const html = `
-        <div class="pb-insert-dialog">
+        <div class="pb-insert-dialog"${getPopupThemeAttribute()}>
             <div class="pb-insert-note">도착 프리셋에서 묶음이 들어갈 위치를 선택하세요.</div>
             <div class="pb-insert-list">${rows}</div>
         </div>
     `;
     const observer = new MutationObserver(() => {
+        applyPopupTheme(document.body);
         $('.pb-insert-slot').off('click.pb').on('click.pb', function (event) {
             event.preventDefault();
             insertAfterId = $(this).data('after') || '';
@@ -930,7 +1052,7 @@ async function chooseInsertAfterPrompt(targetPresetName, matchedIds) {
         });
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    const ok = await callGenericPopup(html, POPUP_TYPE.CONFIRM, '', { okButton: '이동', cancelButton: '취소' });
+    const ok = await callGenericPopup(getThemedPopupHtml(html), POPUP_TYPE.CONFIRM, '', withPopupThemeOptions({ okButton: '이동', cancelButton: '취소' }));
     observer.disconnect();
     return ok ? insertAfterId : null;
 }
