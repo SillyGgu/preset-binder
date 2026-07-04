@@ -287,6 +287,21 @@ function applySnapshot(snapshot) {
     updateVisibleToggleStates();
 }
 
+function toggleMarkedPrompt(row) {
+    const $row = $(row);
+    const binderIndex = Number($row.data('binder-index'));
+    const promptId = $row.data('id');
+    const binder = getCurrentBinders()[binderIndex];
+    if (!binder) return;
+    binder.markedPromptIds ||= [];
+    const marked = new Set(binder.markedPromptIds);
+    if (marked.has(promptId)) marked.delete(promptId);
+    else marked.add(promptId);
+    binder.markedPromptIds = [...marked];
+    saveSettings();
+    $row.toggleClass('pb-marked', marked.has(promptId));
+}
+
 async function addToWandMenu() {
     if ($('#preset_binder_wand_button').length > 0) return;
 
@@ -425,10 +440,10 @@ function renderCurrentTab(preset) {
             const name = nameById.get(promptId) || binder.promptLabels?.[promptId] || promptId;
             const enabled = stateById.get(promptId) || false;
             return `
-                <label class="pb-prompt-toggle${markedIds.has(promptId) ? ' pb-marked' : ''}" data-binder-index="${binderIndex}" data-id="${escapeHtml(promptId)}">
+                <div class="pb-prompt-toggle${markedIds.has(promptId) ? ' pb-marked' : ''}" data-binder-index="${binderIndex}" data-id="${escapeHtml(promptId)}">
                     <span title="${escapeHtml(name)}">${escapeHtml(name)}</span>
                     <input type="checkbox" class="pb-toggle-input" data-id="${escapeHtml(promptId)}" ${enabled ? 'checked' : ''}>
-                </label>
+                </div>
             `;
         }).join('');
         const isFirst = binderIndex === 0;
@@ -456,8 +471,13 @@ function renderCurrentTab(preset) {
             <span>현재 프리셋</span>
             <strong>${escapeHtml(preset)}</strong>
         </div>
+        <div class="pb-mobile-hint">토글을 길게 눌러 표시</div>
         <div class="pb-card-grid">${cards}</div>
     `);
+
+    $body.find('.pb-toggle-input').on('pointerdown click', function (event) {
+        event.stopPropagation();
+    });
 
     $body.find('.pb-toggle-input').on('change', function () {
         const promptId = $(this).data('id');
@@ -469,17 +489,57 @@ function renderCurrentTab(preset) {
 
     $body.find('.pb-prompt-toggle').on('contextmenu', function (event) {
         event.preventDefault();
-        const binderIndex = Number($(this).data('binder-index'));
-        const promptId = $(this).data('id');
-        const binder = getCurrentBinders()[binderIndex];
-        if (!binder) return;
-        binder.markedPromptIds ||= [];
-        const marked = new Set(binder.markedPromptIds);
-        if (marked.has(promptId)) marked.delete(promptId);
-        else marked.add(promptId);
-        binder.markedPromptIds = [...marked];
-        saveSettings();
-        $(this).toggleClass('pb-marked', marked.has(promptId));
+        if (this._pbIgnoreContextUntil && Date.now() < this._pbIgnoreContextUntil) return;
+        toggleMarkedPrompt(this);
+    });
+
+    $body.find('.pb-prompt-toggle').each((_, row) => {
+        let pressTimer = null;
+        let startX = 0;
+        let startY = 0;
+        let longPressed = false;
+        const clearPress = () => {
+            if (pressTimer) clearTimeout(pressTimer);
+            pressTimer = null;
+        };
+
+        row.addEventListener('pointerdown', event => {
+            if (!window.matchMedia('(max-width: 680px)').matches) return;
+            if (event.target.closest('.pb-toggle-input')) return;
+            startX = event.clientX;
+            startY = event.clientY;
+            longPressed = false;
+            row.classList.add('pb-pressing');
+            clearPress();
+            pressTimer = setTimeout(() => {
+                longPressed = true;
+                row._pbIgnoreContextUntil = Date.now() + 900;
+                row.classList.remove('pb-pressing');
+                toggleMarkedPrompt(row);
+            }, 550);
+        });
+
+        row.addEventListener('pointermove', event => {
+            if (!pressTimer) return;
+            if (Math.abs(event.clientX - startX) > 10 || Math.abs(event.clientY - startY) > 10) {
+                row.classList.remove('pb-pressing');
+                clearPress();
+            }
+        });
+
+        row.addEventListener('pointerup', event => {
+            row.classList.remove('pb-pressing');
+            clearPress();
+            if (longPressed) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        });
+
+        row.addEventListener('pointercancel', () => {
+            row.classList.remove('pb-pressing');
+            clearPress();
+        });
     });
 
     $body.find('.pb-move-binder-order').on('click', function () {
