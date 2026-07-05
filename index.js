@@ -519,10 +519,52 @@ function updateWandButton() {
     $('#preset_binder_wand_button').toggle(!!settings.showWandButton);
 }
 
+function getMobileTopInset() {
+    if (!window.matchMedia('(max-width: 680px)').matches) return 8;
+    const selectorCandidates = [
+        '#top-bar',
+        '#topBar',
+        '#top-settings-holder',
+        '#top_settings_holder',
+        '.top-bar',
+        '.topBar',
+        'header',
+    ];
+    const candidates = selectorCandidates
+        .flatMap(selector => Array.from(document.querySelectorAll(selector)))
+        .filter(Boolean);
+    const fixedTopElements = Array.from(document.body.querySelectorAll('*')).filter(element => {
+        const style = getComputedStyle(element);
+        if (!['fixed', 'sticky'].includes(style.position)) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.height > 0
+            && rect.height < window.innerHeight * 0.35
+            && rect.top <= 4
+            && rect.bottom > 8;
+    });
+
+    const bottom = [...candidates, ...fixedTopElements].reduce((max, element) => {
+        if (element.closest?.('#preset-binder-window')) return max;
+        const rect = element.getBoundingClientRect();
+        if (rect.height <= 0 || rect.top > 12 || rect.bottom > window.innerHeight * 0.4) return max;
+        return Math.max(max, rect.bottom);
+    }, 0);
+
+    return Math.max(8, Math.ceil(bottom) + 8);
+}
+
+function applyMobileWindowInset() {
+    const $window = $('#preset-binder-window');
+    if (!$window.length) return;
+    const top = getMobileTopInset();
+    document.documentElement.style.setProperty('--pb-mobile-top-inset', `${top}px`);
+}
+
 function openBinderWindow() {
     if (!$('#preset-binder-window').length) {
         createBinderWindow();
     }
+    applyMobileWindowInset();
     $('#preset-binder-window').show();
     renderBinderWindow();
 }
@@ -585,6 +627,7 @@ function renderBinderWindow() {
     const $window = $('#preset-binder-window');
     if (!$window.length || !$window.is(':visible')) return;
     applyThemeClass();
+    applyMobileWindowInset();
 
     const preset = getCurrentPresetName();
     const snapshots = getCurrentSnapshots();
@@ -1599,6 +1642,8 @@ function wireSettingsPanel() {
     eventSource.on(event_types.APP_READY, () => {
         updateWandButton();
     });
+
+    $(window).on('resize.presetBinderInset orientationchange.presetBinderInset', applyMobileWindowInset);
 
     console.log(`[${extensionName}] loaded`);
 })();

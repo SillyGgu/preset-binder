@@ -1386,9 +1386,9 @@
 @media (max-width: 680px) {
     #preset-binder-window {
         left: 8px !important;
-        top: 8px !important;
+        top: var(--pb-mobile-top-inset, 8px) !important;
         width: calc(100vw - 16px) !important;
-        height: calc(100vh - 16px) !important;
+        height: calc(100vh - var(--pb-mobile-top-inset, 8px) - 8px) !important;
         min-width: 0;
     }
 
