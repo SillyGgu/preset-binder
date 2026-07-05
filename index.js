@@ -24,6 +24,7 @@ import {
 const extensionName = 'preset-binder';
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const GLOBAL_PROMPT_ORDER_ID = 100001;
+const MAX_MEMO_LENGTH = 20000;
 const POPUP_THEME_PROPS = [
     '--pb-bg-main',
     '--pb-bg-header',
@@ -52,12 +53,14 @@ const DEFAULT_SETTINGS = {
     window: { left: 180, top: 110, width: 760, height: 560 },
     bindersByPreset: {},
     snapshotsByPreset: {},
+    notesByPreset: {},
 };
 
 let settings;
 let dragFrame = null;
 let resizeFrame = null;
 let promptSaveTimer = null;
+let memoSaveTimer = null;
 let stateSyncTimer = null;
 let lastStateSyncSnapshot = '';
 
@@ -68,6 +71,7 @@ function ensureSettings() {
     );
     settings.bindersByPreset ||= {};
     settings.snapshotsByPreset ||= {};
+    settings.notesByPreset ||= {};
     settings.window ||= structuredClone(DEFAULT_SETTINGS.window);
     settings.theme ||= DEFAULT_SETTINGS.theme;
 }
@@ -264,6 +268,54 @@ function getCurrentBinders(create = false) {
 
 function getCurrentSnapshots(create = false) {
     return getSnapshotsForPreset(getCurrentPresetName(), create);
+}
+
+function getMemoRecordForPreset(preset) {
+    if (!preset) return null;
+    const record = settings.notesByPreset?.[preset];
+    if (!record) return null;
+    if (typeof record === 'string') return { text: record, updatedAt: 0 };
+    return record;
+}
+
+function getMemoTextForPreset(preset) {
+    return getMemoRecordForPreset(preset)?.text || '';
+}
+
+function setMemoForPreset(preset, text) {
+    if (!preset) return;
+    let value = String(text ?? '').replace(/\r\n/g, '\n');
+    if (value.length > MAX_MEMO_LENGTH) {
+        value = value.slice(0, MAX_MEMO_LENGTH);
+        toastr.warning(`프리셋 메모는 ${MAX_MEMO_LENGTH.toLocaleString()}자까지만 저장됩니다.`);
+    }
+
+    if (!value.trim()) {
+        delete settings.notesByPreset[preset];
+    } else {
+        settings.notesByPreset[preset] = {
+            text: value,
+            updatedAt: Date.now(),
+        };
+    }
+    saveSettings();
+}
+
+function saveMemoDebounced(preset, text, onSaved = null) {
+    clearTimeout(memoSaveTimer);
+    memoSaveTimer = setTimeout(() => {
+        setMemoForPreset(preset, text);
+        if (typeof onSaved === 'function') onSaved();
+    }, 300);
+}
+
+function formatMemoTime(timestamp) {
+    if (!timestamp) return '저장 전';
+    try {
+        return new Date(timestamp).toLocaleString();
+    } catch {
+        return '저장됨';
+    }
 }
 
 function getPresetData(presetName) {
@@ -501,6 +553,7 @@ function createBinderWindow() {
             </div>
             <div class="pb-tabs">
                 <button class="pb-tab" data-tab="current">현재 프리셋</button>
+                <button class="pb-tab" data-tab="memo">프리셋 메모</button>
                 <button class="pb-tab" data-tab="data">저장 데이터</button>
             </div>
             <div class="pb-toolbar">
@@ -536,6 +589,9 @@ function renderBinderWindow() {
     const preset = getCurrentPresetName();
     const snapshots = getCurrentSnapshots();
     const $select = $('#pb-snapshot-select');
+    const validTabs = new Set(['current', 'memo', 'data']);
+    if (!validTabs.has(settings.activeTab)) settings.activeTab = 'current';
+    $window.toggleClass('pb-tab-memo', settings.activeTab === 'memo');
 
     $window.find('.pb-tab').removeClass('active');
     $window.find(`.pb-tab[data-tab="${settings.activeTab}"]`).addClass('active');
@@ -547,6 +603,8 @@ function renderBinderWindow() {
 
     if (settings.activeTab === 'data') {
         renderDataTab(preset, snapshots);
+    } else if (settings.activeTab === 'memo') {
+        renderMemoTab(preset);
     } else {
         renderCurrentTab(preset);
     }
@@ -719,25 +777,85 @@ function renderCurrentTab(preset) {
     });
 }
 
+function renderMemoTab(preset) {
+    const $body = $('#preset-binder-window .pb-body');
+    if (!preset) {
+        $body.html('<div class="pb-empty">먼저 프리셋을 선택하세요.</div>');
+        return;
+    }
+
+    const record = getMemoRecordForPreset(preset);
+    const memo = record?.text || '';
+    $body.html(`
+        ${getCurrentPresetLineHtml(preset)}
+        <section class="pb-memo-panel">
+            <textarea id="pb-preset-memo" class="pb-memo-textarea" maxlength="${MAX_MEMO_LENGTH}" placeholder="프리셋 제작자의 안내, 사용법, 주의사항을 적어두세요.">${escapeHtml(memo)}</textarea>
+            <div class="pb-memo-footer">
+                <span id="pb-memo-status">마지막 저장: ${escapeHtml(formatMemoTime(record?.updatedAt))}</span>
+                <span id="pb-memo-count">${memo.length.toLocaleString()} / ${MAX_MEMO_LENGTH.toLocaleString()}</span>
+                <button class="pb-soft" id="pb-clear-memo" type="button"><i class="fa-solid fa-eraser"></i><span>비우기</span></button>
+            </div>
+        </section>
+    `);
+    bindCurrentPresetLine($body);
+
+    const $textarea = $('#pb-preset-memo');
+    const $status = $('#pb-memo-status');
+    const $count = $('#pb-memo-count');
+
+    $textarea.on('input', function () {
+        const value = this.value;
+        $count.text(`${value.length.toLocaleString()} / ${MAX_MEMO_LENGTH.toLocaleString()}`);
+        $status.text('저장 대기 중...');
+        saveMemoDebounced(preset, value, () => {
+            $status.text(`마지막 저장: ${formatMemoTime(Date.now())}`);
+        });
+    });
+
+    $textarea.on('blur', function () {
+        clearTimeout(memoSaveTimer);
+        setMemoForPreset(preset, this.value);
+        $status.text(`마지막 저장: ${formatMemoTime(Date.now())}`);
+    });
+
+    $('#pb-clear-memo').on('click', function () {
+        clearTimeout(memoSaveTimer);
+        $textarea.val('');
+        setMemoForPreset(preset, '');
+        $count.text(`0 / ${MAX_MEMO_LENGTH.toLocaleString()}`);
+        $status.text('메모가 비워졌습니다.');
+    });
+}
+
 function renderDataTab(preset, snapshots) {
-    const binders = getCurrentBinders();
     const allPresetNames = [...new Set([
         ...Object.keys(settings.bindersByPreset || {}),
         ...Object.keys(settings.snapshotsByPreset || {}),
+        ...Object.keys(settings.notesByPreset || {}),
     ])].filter(presetName => {
         if (!presetName) return false;
         const presetBinders = settings.bindersByPreset[presetName];
         const presetSnapshots = settings.snapshotsByPreset[presetName];
+        const presetMemo = getMemoTextForPreset(presetName);
         return (Array.isArray(presetBinders) && presetBinders.length > 0)
-            || (Array.isArray(presetSnapshots) && presetSnapshots.length > 0);
+            || (Array.isArray(presetSnapshots) && presetSnapshots.length > 0)
+            || !!presetMemo.trim();
     }).sort((a, b) => a.localeCompare(b));
     const totalBinders = Object.values(settings.bindersByPreset || {})
         .reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0);
     const totalSnapshots = Object.values(settings.snapshotsByPreset || {})
         .reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0);
+    const totalNotes = Object.values(settings.notesByPreset || {})
+        .reduce((sum, record) => {
+            const text = typeof record === 'string' ? record : record?.text;
+            return sum + (String(text || '').trim() ? 1 : 0);
+        }, 0);
     const presetSections = allPresetNames.map(presetName => {
         const presetBinders = settings.bindersByPreset[presetName] || [];
         const presetSnapshots = settings.snapshotsByPreset[presetName] || [];
+        const presetMemo = getMemoRecordForPreset(presetName);
+        const memoText = presetMemo?.text || '';
+        const memoSummary = memoText.replace(/\s+/g, ' ').trim();
         const binderRows = presetBinders.map(binder => {
             const names = binder.promptIds.map(promptId => binder.promptLabels?.[promptId] || promptId);
             const summary = names.slice(0, 5).join(', ') + (names.length > 5 ? ` 외 ${names.length - 5}개` : '');
@@ -755,15 +873,23 @@ function renderDataTab(preset, snapshots) {
                 <button class="pb-icon-btn pb-delete-snapshot" data-preset="${escapeHtml(presetName)}" data-id="${escapeHtml(snapshot.id)}" title="삭제" aria-label="삭제"><i class="fa-solid fa-trash"></i></button>
             </div>
         `).join('');
+        const memoRow = memoSummary ? `
+            <div class="pb-data-row pb-data-memo-row">
+                <b>프리셋 메모</b>
+                <span title="${escapeHtml(memoSummary)}">${escapeHtml(memoSummary.slice(0, 120))}${memoSummary.length > 120 ? '...' : ''}</span>
+                <button class="pb-icon-btn pb-delete-memo" data-preset="${escapeHtml(presetName)}" title="메모 삭제" aria-label="메모 삭제"><i class="fa-solid fa-trash"></i></button>
+            </div>
+        ` : '';
 
         return `
             <section class="pb-data-section">
                 <header>
                     <strong>${escapeHtml(presetName)}</strong>
-                    <small>묶음 ${presetBinders.length}개 · 저장 ${presetSnapshots.length}개</small>
+                    <small>묶음 ${presetBinders.length}개 · 저장 ${presetSnapshots.length}개 · 메모 ${memoSummary ? 1 : 0}개</small>
                 </header>
                 ${binderRows ? `<div class="pb-data-list">${binderRows}</div>` : '<div class="pb-empty compact">저장된 묶음이 없습니다.</div>'}
                 ${snapshotRows ? `<div class="pb-snapshot-list">${snapshotRows}</div>` : ''}
+                ${memoRow ? `<div class="pb-data-list">${memoRow}</div>` : ''}
             </section>
         `;
     }).join('');
@@ -787,6 +913,7 @@ function renderDataTab(preset, snapshots) {
             <div class="pb-data-summary">
                 <div><b>${totalBinders}</b><span>전체 묶음</span></div>
                 <div><b>${totalSnapshots}</b><span>전체 저장 설정</span></div>
+                <div><b>${totalNotes}</b><span>전체 메모</span></div>
             </div>
             ${presetSections || '<div class="pb-empty compact">저장된 데이터가 없습니다.</div>'}
         </div>
@@ -805,6 +932,9 @@ function renderDataTab(preset, snapshots) {
     });
     $('.pb-delete-data-binder').on('click', function () {
         deleteBinderFromPreset($(this).data('preset'), $(this).data('id'));
+    });
+    $('.pb-delete-memo').on('click', function () {
+        deleteMemoFromPreset($(this).data('preset'));
     });
 }
 
@@ -1257,6 +1387,15 @@ async function deleteBinderFromPreset(presetName, binderId) {
     renderBinderWindow();
 }
 
+async function deleteMemoFromPreset(presetName) {
+    if (!presetName || !settings.notesByPreset?.[presetName]) return;
+    const ok = await callGenericPopup(`"${presetName}"의 프리셋 메모를 삭제할까요?`, POPUP_TYPE.CONFIRM);
+    if (!ok) return;
+    delete settings.notesByPreset[presetName];
+    saveSettings();
+    renderBinderWindow();
+}
+
 async function clearCurrentPresetData() {
     const preset = getCurrentPresetName();
     if (!preset) return;
@@ -1264,15 +1403,17 @@ async function clearCurrentPresetData() {
     if (!ok) return;
     delete settings.bindersByPreset[preset];
     delete settings.snapshotsByPreset[preset];
+    delete settings.notesByPreset[preset];
     saveSettings();
     renderBinderWindow();
 }
 
 async function clearAllData() {
-    const ok = await callGenericPopup('Preset Binder의 모든 묶음과 저장 설정을 삭제할까요?', POPUP_TYPE.CONFIRM);
+    const ok = await callGenericPopup('Preset Binder의 모든 묶음, 저장 설정, 메모를 삭제할까요?', POPUP_TYPE.CONFIRM);
     if (!ok) return;
     settings.bindersByPreset = {};
     settings.snapshotsByPreset = {};
+    settings.notesByPreset = {};
     saveSettings();
     renderBinderWindow();
 }
