@@ -17,7 +17,7 @@
     --pb-picked-bg-end: #ffffff;
     --pb-picked-shadow: rgba(58, 91, 63, 0.12);
     position: fixed;
-    z-index: 4000;
+    z-index: 1000;
     display: none;
     min-width: 420px;
     min-height: 360px;
