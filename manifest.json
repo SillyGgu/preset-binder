@@ -1,12 +1,12 @@
 {
-    "display_name": "Preset Binder",
+    "display_name": "프리셋 바인더",
     "loading_order": 212,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
     "settings": "settings.html",
-    "author": "rkdud",
+    "author": "SillyGgu",
     "version": "0.2.0",
     "homePage": ""
 }

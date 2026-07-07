@@ -428,11 +428,97 @@ function updateCurrentStPreset() {
     $button.trigger('click');
 }
 
-function getCurrentPresetLineHtml(preset) {
+const PRESET_TOKEN_CONTROLS = {
+    context: {
+        label: 'Context Size',
+        settingKeys: ['openai_max_context', 'max_context', 'context_size', 'contextSize'],
+        selectors: ['#openai_max_context', '#max_context', '[name="openai_max_context"]', '[name="max_context"]'],
+    },
+    response: {
+        label: 'Max Response Length',
+        settingKeys: ['openai_max_tokens', 'max_tokens', 'amount_gen', 'maxResponseLength'],
+        selectors: ['#openai_max_tokens', '#amount_gen', '[name="openai_max_tokens"]', '[name="amount_gen"]'],
+    },
+};
+const PRESET_TOKEN_CONTROL_SELECTOR = [...new Set(Object.values(PRESET_TOKEN_CONTROLS).flatMap(control => control.selectors))].join(',');
+
+function getPresetTokenValue(type) {
+    const control = PRESET_TOKEN_CONTROLS[type];
+    if (!control) return 0;
+    for (const key of control.settingKeys) {
+        const value = oai_settings?.[key];
+        if (value !== undefined && value !== null && value !== '') return Number(value) || 0;
+    }
+    for (const selector of control.selectors) {
+        const value = $(selector).first().val();
+        if (value !== undefined && value !== null && value !== '') return Number(value) || 0;
+    }
+    return 0;
+}
+
+function setPresetTokenValue(type, value) {
+    const control = PRESET_TOKEN_CONTROLS[type];
+    if (!control) return;
+    const number = Math.max(0, Math.floor(Number(value) || 0));
+    const primaryKey = control.settingKeys.find(key => Object.prototype.hasOwnProperty.call(oai_settings, key))
+        || control.settingKeys[0];
+    oai_settings[primaryKey] = number;
+
+    for (const key of control.settingKeys) {
+        if (Object.prototype.hasOwnProperty.call(oai_settings, key)) {
+            oai_settings[key] = number;
+        }
+    }
+
+    for (const selector of control.selectors) {
+        const $input = $(selector).first();
+        if ($input.length && String($input.val()) !== String(number)) {
+            $input.val(number).trigger('input').trigger('change');
+        }
+    }
+}
+
+function getPresetTokenToolsHtml() {
+    const contextValue = getPresetTokenValue('context');
+    const responseValue = getPresetTokenValue('response');
+    return `
+        <div class="pb-preset-tools" hidden>
+            <label>
+                <span>Context Size</span>
+                <input class="pb-preset-token-input" data-token-field="context" type="number" min="0" step="1" value="${contextValue}">
+            </label>
+            <label>
+                <span>Max Response Length</span>
+                <input class="pb-preset-token-input" data-token-field="response" type="number" min="0" step="1" value="${responseValue}">
+            </label>
+            <div class="pb-preset-tools-status">저장은 우측 저장 버튼으로 적용</div>
+        </div>
+    `;
+}
+
+function refreshPresetTokenToolValues(sourceElement = null) {
+    const $window = $('#preset-binder-window');
+    if (!$window.is(':visible')) return;
+
+    $window.find('.pb-preset-token-input').each((_, input) => {
+        if (input === sourceElement || document.activeElement === input) return;
+        const field = $(input).data('token-field');
+        const value = getPresetTokenValue(field);
+        if (String(input.value) !== String(value)) input.value = value;
+    });
+}
+
+function getCurrentPresetLineHtml(preset, { enableTokenTools = false } = {}) {
     return `
         <div class="pb-preset-line">
             <span>현재 프리셋</span>
-            <strong>${escapeHtml(preset)}</strong>
+            <span class="pb-preset-name-wrap">
+                <button class="pb-preset-name-trigger" type="button" ${enableTokenTools ? '' : 'disabled'} title="${enableTokenTools ? '프리셋 토큰 설정' : ''}" aria-label="프리셋 토큰 설정">
+                    <strong>${escapeHtml(preset)}</strong>
+                    ${enableTokenTools ? '<i class="fa-solid fa-sliders"></i>' : ''}
+                </button>
+                ${enableTokenTools ? getPresetTokenToolsHtml() : ''}
+            </span>
             <button class="pb-icon-btn pb-save-st-preset" type="button" title="ST 현재 프리셋 업데이트" aria-label="ST 현재 프리셋 업데이트"><i class="fa-solid fa-save"></i></button>
         </div>
     `;
@@ -440,6 +526,30 @@ function getCurrentPresetLineHtml(preset) {
 
 function bindCurrentPresetLine($scope) {
     $scope.find('.pb-save-st-preset').off('click.presetBinder').on('click.presetBinder', updateCurrentStPreset);
+    $scope.find('.pb-preset-name-trigger:not(:disabled)').off('click.presetBinder').on('click.presetBinder', function (event) {
+        event.stopPropagation();
+        const $line = $(this).closest('.pb-preset-line');
+        const $tools = $line.find('.pb-preset-tools');
+        const willOpen = $tools.prop('hidden');
+        $('#preset-binder-window .pb-preset-tools').prop('hidden', true);
+        $('#preset-binder-window .pb-preset-line').removeClass('pb-token-tools-open');
+        $tools.prop('hidden', !willOpen);
+        $line.toggleClass('pb-token-tools-open', willOpen);
+    });
+    $scope.find('.pb-preset-token-input').off('input.presetBinder').on('input.presetBinder', function () {
+        const field = $(this).data('token-field');
+        setPresetTokenValue(field, this.value);
+        $(this).closest('.pb-preset-tools').find('.pb-preset-tools-status').text('변경됨 · 우측 저장 버튼 필요');
+        clearTimeout(this._pbStatusTimer);
+        this._pbStatusTimer = setTimeout(() => {
+            $(this).closest('.pb-preset-tools').find('.pb-preset-tools-status').text('저장은 우측 저장 버튼으로 적용');
+        }, 700);
+    });
+    $(document).off('pointerdown.presetBinderTools').on('pointerdown.presetBinderTools', event => {
+        if ($(event.target).closest('.pb-preset-name-wrap').length) return;
+        $('#preset-binder-window .pb-preset-tools').prop('hidden', true);
+        $('#preset-binder-window .pb-preset-line').removeClass('pb-token-tools-open');
+    });
 }
 
 function setPromptEnabled(promptId, enabled) {
@@ -674,7 +784,7 @@ function renderCurrentTab(preset) {
 
     if (!binders.length) {
         $body.html(`
-            ${getCurrentPresetLineHtml(preset)}
+            ${getCurrentPresetLineHtml(preset, { enableTokenTools: true })}
             <div class="pb-empty">아직 묶음이 없습니다. 상단의 추가 버튼으로 첫 묶음을 만들어보세요.</div>
         `);
         bindCurrentPresetLine($body);
@@ -715,7 +825,7 @@ function renderCurrentTab(preset) {
     }).join('');
 
     $body.html(`
-        ${getCurrentPresetLineHtml(preset)}
+        ${getCurrentPresetLineHtml(preset, { enableTokenTools: true })}
         <div class="pb-mobile-hint">토글을 길게 눌러 표시</div>
         <div class="pb-card-grid">${cards}</div>
     `);
@@ -1626,6 +1736,14 @@ function wireSettingsPanel() {
     $('#preset_binder_reset_window').on('click', resetWindowRect);
 }
 
+function wirePresetTokenSync() {
+    if (!PRESET_TOKEN_CONTROL_SELECTOR) return;
+    $(document).off('input.presetBinderTokenSync change.presetBinderTokenSync', PRESET_TOKEN_CONTROL_SELECTOR)
+        .on('input.presetBinderTokenSync change.presetBinderTokenSync', PRESET_TOKEN_CONTROL_SELECTOR, function () {
+            refreshPresetTokenToolValues(this);
+        });
+}
+
 (async function () {
     ensureSettings();
     await addToWandMenu();
@@ -1633,6 +1751,7 @@ function wireSettingsPanel() {
     const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
     $('#extensions_settings2').append(settingsHtml);
     wireSettingsPanel();
+    wirePresetTokenSync();
     startStateSync();
     eventSource.on(event_types.OAI_PRESET_CHANGED_AFTER, () => {
         lastStateSyncSnapshot = '';
