@@ -217,6 +217,29 @@ function getPromptManager() {
     return setupChatCompletionPromptManager(oai_settings);
 }
 
+function normalizePromptId(promptId) {
+    return String(promptId ?? '');
+}
+
+function getPromptDisplayName(prompt, entry, fallbackId) {
+    const id = String(fallbackId ?? prompt?.identifier ?? entry?.identifier ?? '');
+    const candidates = [
+        prompt?.name,
+        prompt?.display_name,
+        prompt?.title,
+        entry?.name,
+        entry?.display_name,
+        entry?.title,
+    ];
+
+    for (const value of candidates) {
+        const text = String(value ?? '').trim();
+        if (text && text !== id) return text;
+    }
+
+    return id;
+}
+
 function getPromptRows() {
     let serviceSettings = oai_settings;
     try {
@@ -226,15 +249,19 @@ function getPromptRows() {
     }
 
     const order = getPromptOrder(serviceSettings);
-    const promptMap = new Map((serviceSettings?.prompts || []).map(prompt => [prompt.identifier, prompt]));
+    const livePromptMap = new Map((serviceSettings?.prompts || []).map(prompt => [prompt.identifier, prompt]));
+    const presetPromptMap = new Map((oai_settings?.prompts || []).map(prompt => [prompt.identifier, prompt]));
 
     return order
         .map(entry => {
-            const prompt = promptMap.get(entry.identifier);
-            if (!prompt) return null;
+            const livePrompt = livePromptMap.get(entry.identifier);
+            const presetPrompt = presetPromptMap.get(entry.identifier);
+            const prompt = presetPrompt || livePrompt;
+
+            if (!prompt && !entry?.identifier) return null;
             return {
                 id: entry.identifier,
-                name: prompt.name || entry.identifier,
+                name: getPromptDisplayName(prompt || livePrompt, entry, entry.identifier),
                 enabled: !!entry.enabled,
                 entry,
             };
@@ -340,10 +367,10 @@ function getPromptRowsFromPreset(presetName) {
     const orderedRows = order
         .map((entry, index) => {
             const prompt = promptMap.get(entry.identifier);
-            if (!prompt) return null;
+            if (!prompt && !entry?.identifier) return null;
             return {
                 id: entry.identifier,
-                name: prompt.name || entry.identifier,
+                name: getPromptDisplayName(prompt, entry, entry.identifier),
                 enabled: !!entry.enabled,
                 index,
                 entry,
@@ -354,7 +381,7 @@ function getPromptRowsFromPreset(presetName) {
         .filter(prompt => !inOrder.has(prompt.identifier))
         .map((prompt, index) => ({
             id: prompt.identifier,
-            name: prompt.name || prompt.identifier,
+            name: getPromptDisplayName(prompt, null, prompt.identifier),
             enabled: false,
             index: orderedRows.length + index,
             entry: null,
@@ -368,15 +395,30 @@ function getUsedPromptIdsForPreset(presetName, exceptBinderId = null) {
     for (const binder of getBindersForPreset(presetName)) {
         if (exceptBinderId && binder.id === exceptBinderId) continue;
         for (const promptId of binder.promptIds || []) {
-            used.add(promptId);
+            used.add(normalizePromptId(promptId));
         }
     }
     return used;
 }
 
 function makePromptLabels(prompts, promptIds) {
-    const names = new Map(prompts.map(prompt => [prompt.id, prompt.name]));
-    return Object.fromEntries(promptIds.map(promptId => [promptId, names.get(promptId) || promptId]));
+    const names = new Map(prompts.map(prompt => [normalizePromptId(prompt.id), prompt.name]));
+    return Object.fromEntries(promptIds.map(promptId => {
+        const id = normalizePromptId(promptId);
+        const name = String(names.get(id) ?? '').trim();
+        return [id, name && name !== id ? name : id];
+    }));
+}
+
+function resolvePromptLabel(promptId, binder, nameById) {
+    const id = normalizePromptId(promptId);
+    const savedLabel = String(binder.promptLabels?.[id] ?? '').trim();
+    if (savedLabel && savedLabel !== id) return savedLabel;
+
+    const liveLabel = String(nameById.get(id) ?? '').trim();
+    if (liveLabel && liveLabel !== id) return liveLabel;
+
+    return id;
 }
 
 function makeUniquePromptId(baseId, existingIds) {
@@ -389,11 +431,11 @@ function makeUniquePromptId(baseId, existingIds) {
 }
 
 function removePromptsFromPreset(preset, promptIds) {
-    const ids = new Set(promptIds);
-    preset.prompts = (preset.prompts || []).filter(prompt => !ids.has(prompt.identifier));
+    const ids = new Set(promptIds.map(normalizePromptId));
+    preset.prompts = (preset.prompts || []).filter(prompt => !ids.has(normalizePromptId(prompt.identifier)));
     for (const orderBlock of preset.prompt_order || []) {
         if (orderBlock.order) {
-            orderBlock.order = orderBlock.order.filter(entry => !ids.has(entry.identifier));
+            orderBlock.order = orderBlock.order.filter(entry => !ids.has(normalizePromptId(entry.identifier)));
         }
     }
 }
@@ -594,11 +636,11 @@ function applySnapshot(snapshot) {
 function toggleMarkedPrompt(row) {
     const $row = $(row);
     const binderIndex = Number($row.data('binder-index'));
-    const promptId = $row.data('id');
+    const promptId = normalizePromptId($row.attr('data-id'));
     const binder = getCurrentBinders()[binderIndex];
     if (!binder) return;
     binder.markedPromptIds ||= [];
-    const marked = new Set(binder.markedPromptIds);
+    const marked = new Set(binder.markedPromptIds.map(normalizePromptId));
     if (marked.has(promptId)) marked.delete(promptId);
     else marked.add(promptId);
     binder.markedPromptIds = [...marked];
@@ -773,8 +815,8 @@ function renderCurrentTab(preset) {
         return;
     }
 
-    const stateById = new Map(prompts.map(row => [row.id, row.enabled]));
-    const nameById = new Map(prompts.map(row => [row.id, row.name]));
+    const stateById = new Map(prompts.map(row => [normalizePromptId(row.id), row.enabled]));
+    const nameById = new Map(prompts.map(row => [normalizePromptId(row.id), row.name]));
     const binders = getCurrentBinders();
 
     if (!preset) {
@@ -793,14 +835,15 @@ function renderCurrentTab(preset) {
 
     const cards = binders.map((binder, binderIndex) => {
         binder.markedPromptIds ||= [];
-        const markedIds = new Set(binder.markedPromptIds);
+        const markedIds = new Set(binder.markedPromptIds.map(normalizePromptId));
         const rows = binder.promptIds.map(promptId => {
-            const name = nameById.get(promptId) || binder.promptLabels?.[promptId] || promptId;
-            const enabled = stateById.get(promptId) || false;
+            const id = normalizePromptId(promptId);
+            const name = resolvePromptLabel(id, binder, nameById);
+            const enabled = stateById.get(id) || false;
             return `
-                <div class="pb-prompt-toggle${markedIds.has(promptId) ? ' pb-marked' : ''}" data-binder-index="${binderIndex}" data-id="${escapeHtml(promptId)}">
+                <div class="pb-prompt-toggle${markedIds.has(id) ? ' pb-marked' : ''}" data-binder-index="${binderIndex}" data-id="${escapeHtml(id)}">
                     <span title="${escapeHtml(name)}">${escapeHtml(name)}</span>
-                    <input type="checkbox" class="pb-toggle-input" data-id="${escapeHtml(promptId)}" ${enabled ? 'checked' : ''}>
+                    <input type="checkbox" class="pb-toggle-input" data-id="${escapeHtml(id)}" ${enabled ? 'checked' : ''}>
                 </div>
             `;
         }).join('');
@@ -837,11 +880,11 @@ function renderCurrentTab(preset) {
     });
 
     $body.find('.pb-toggle-input').on('change', function () {
-        const promptId = $(this).data('id');
+        const promptId = normalizePromptId($(this).attr('data-id'));
         const checked = $(this).prop('checked');
         const ok = setPromptEnabled(promptId, checked);
         if (!ok) toastr.warning('프롬프트를 찾지 못했습니다.');
-        $body.find('.pb-toggle-input').filter((_, input) => $(input).data('id') === promptId).prop('checked', checked);
+        $body.find('.pb-toggle-input').filter((_, input) => normalizePromptId($(input).attr('data-id')) === promptId).prop('checked', checked);
     });
 
     $body.find('.pb-prompt-toggle').on('contextmenu', function (event) {
@@ -1100,19 +1143,23 @@ async function showPromptSelectionPopup({
     okButton = '등록',
 }) {
     const prompts = presetName === getCurrentPresetName() ? getPromptRows() : getPromptRowsFromPreset(presetName);
-    const initialSet = new Set(initialIds);
-    const visiblePrompts = prompts.filter(prompt => initialSet.has(prompt.id) || !excludedIds.has(prompt.id));
+    const initialSet = new Set(initialIds.map(normalizePromptId));
+    const normalizedExcludedIds = new Set([...excludedIds].map(normalizePromptId));
+    const visiblePrompts = prompts.filter(prompt => {
+        const id = normalizePromptId(prompt.id);
+        return initialSet.has(id) || !normalizedExcludedIds.has(id);
+    });
 
     if (!visiblePrompts.length) {
         toastr.warning('선택할 프롬프트가 없습니다.');
         return null;
     }
 
-    const selectedIds = new Set(initialIds);
+    const selectedIds = new Set(initialIds.map(normalizePromptId));
     let titleValue = initialTitle;
     const rows = visiblePrompts.map((prompt, index) => `
         <label class="pb-picker-row" data-id="${escapeHtml(prompt.id)}">
-            <input type="checkbox" class="pb-picker-check" data-id="${escapeHtml(prompt.id)}" data-index="${index}" ${selectedIds.has(prompt.id) ? 'checked' : ''}>
+            <input type="checkbox" class="pb-picker-check" data-id="${escapeHtml(prompt.id)}" data-index="${index}" ${selectedIds.has(normalizePromptId(prompt.id)) ? 'checked' : ''}>
             <span>${escapeHtml(prompt.name)}</span>
             <em class="${prompt.enabled ? 'pb-state-on' : 'pb-state-off'}">${prompt.enabled ? 'ON' : 'OFF'}</em>
         </label>
@@ -1172,7 +1219,7 @@ async function showPromptSelectionPopup({
             $(this).toggleClass('pb-title-missing', !titleValue.trim());
         });
         $('#pb-picker-all').off('click.pb').on('click.pb', () => {
-            visiblePrompts.forEach(prompt => selectedIds.add(prompt.id));
+            visiblePrompts.forEach(prompt => selectedIds.add(normalizePromptId(prompt.id)));
             $('.pb-picker-check').prop('checked', true);
             syncPickedRows();
         });
@@ -1182,7 +1229,7 @@ async function showPromptSelectionPopup({
             syncPickedRows();
         });
         $('.pb-picker-check').off('change.pb').on('change.pb', function () {
-            const promptId = $(this).data('id');
+            const promptId = normalizePromptId($(this).attr('data-id'));
             if ($(this).prop('checked')) selectedIds.add(promptId);
             else selectedIds.delete(promptId);
             syncPickedRows();
@@ -1197,7 +1244,7 @@ async function showPromptSelectionPopup({
     observer.disconnect();
     if (!confirmed) return null;
 
-    const selected = [...selectedIds];
+    const selected = [...selectedIds].map(normalizePromptId);
     if (!selected.length) {
         toastr.warning('선택한 프롬프트가 없습니다.');
         return null;
@@ -1227,7 +1274,7 @@ async function openPromptPicker() {
     getCurrentBinders(true).push({
         id: makeId('binder'),
         title: result.title,
-        promptIds: result.promptIds,
+        promptIds: result.promptIds.map(normalizePromptId),
         promptLabels: makePromptLabels(result.prompts, result.promptIds),
         markedPromptIds: [],
         createdAt: Date.now(),
@@ -1251,11 +1298,11 @@ async function editBinder(index) {
     });
     if (!result) return;
 
-    const selectedSet = new Set(result.promptIds);
+    const selectedSet = new Set(result.promptIds.map(normalizePromptId));
     binder.title = result.title;
-    binder.promptIds = result.promptIds;
+    binder.promptIds = result.promptIds.map(normalizePromptId);
     binder.promptLabels = makePromptLabels(result.prompts, result.promptIds);
-    binder.markedPromptIds = (binder.markedPromptIds || []).filter(promptId => selectedSet.has(promptId));
+    binder.markedPromptIds = (binder.markedPromptIds || []).map(normalizePromptId).filter(promptId => selectedSet.has(promptId));
     saveSettings();
     renderBinderWindow();
 }
@@ -1701,10 +1748,10 @@ function updateVisibleToggleStates() {
     if (snapshot === lastStateSyncSnapshot) return;
     lastStateSyncSnapshot = snapshot;
 
-    const stateById = new Map(rows.map(row => [row.id, row.enabled]));
+    const stateById = new Map(rows.map(row => [normalizePromptId(row.id), row.enabled]));
     $('#preset-binder-window .pb-toggle-input').each((_, input) => {
         const $input = $(input);
-        const promptId = $input.data('id');
+        const promptId = normalizePromptId($input.attr('data-id'));
         if (!stateById.has(promptId)) return;
         const enabled = stateById.get(promptId);
         if ($input.prop('checked') !== enabled) {
